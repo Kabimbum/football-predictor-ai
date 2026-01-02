@@ -1,0 +1,45 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+/root/college/football-predictor-ai/.venv
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Model / large files (optional)
+*.pkl
+*.joblib
+*.h5
+*.pt
+*.onnx
+
+# Logs
+*.log
+# Ignore virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Model weights / ML artifacts (biasanya file besar)
+*.pkl
+*.h5
+*.pt
+*.onnx
+*.joblib
+
+# OS files (macOS)
+.DS_Store
