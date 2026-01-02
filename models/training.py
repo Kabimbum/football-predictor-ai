@@ -2,12 +2,14 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
 
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, mean_absolute_error
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from xgboost import XGBClassifier, XGBRegressor
+from sklearn.inspection import permutation_importance
 
 # =====================================================
 # PATH
@@ -335,7 +337,7 @@ axes[0].set_ylabel("Accuracy")
 
 # Score Prediction Accuracy
 axes[1].bar(
-    ["Exact Score", "Goal Diff", "Within ±1"],
+    ["Score Sesuai", "Selisih 1", "Lebih ±1"],
     [exact_score_acc, diff_acc, within_1_acc],
     color=['#ff6b6b', '#4ecdc4', '#45b7d1']
 )
@@ -366,8 +368,65 @@ for i in range(3):
 
 plt.show()
 
+from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Prediksi Random Forest
+rf_pred = rf.predict(X_test)
+
 # =====================================================
-# FEATURE IMPORTANCE
+# CONFUSION MATRIX (Random forest)
+# =====================================================
+
+# Confusion Matrix
+cm_rf = confusion_matrix(y_test, rf_pred)
+
+plt.figure(figsize=(5, 4))
+plt.imshow(cm_rf)
+plt.colorbar()
+plt.xticks(range(3), le.classes_)
+plt.yticks(range(3), le.classes_)
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+plt.title("Confusion Matrix - Random Forest")
+
+for i in range(3):
+    for j in range(3):
+        plt.text(j, i, cm_rf[i, j], ha="center", va="center")
+
+plt.tight_layout()
+plt.show()
+
+# =====================================================
+# CONFUSION MATRIX (KNN)
+# =====================================================
+
+# Prediksi KNN (pakai data yang sudah di-scale)
+knn_pred = knn.predict(X_test_s)
+
+# Confusion Matrix
+cm_knn = confusion_matrix(y_test, knn_pred)
+
+plt.figure(figsize=(5, 4))
+plt.imshow(cm_knn)
+plt.colorbar()
+plt.xticks(range(3), le.classes_)
+plt.yticks(range(3), le.classes_)
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+plt.title("Confusion Matrix - KNN")
+
+for i in range(3):
+    for j in range(3):
+        plt.text(j, i, cm_knn[i, j], ha="center", va="center")
+
+plt.tight_layout()
+plt.show()
+
+
+# =====================================================
+# FEATURE IMPORTANCE (XGBOOST)
 # =====================================================
 fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
@@ -388,6 +447,44 @@ axes[2].set_xlabel("Importance")
 
 plt.tight_layout()
 plt.show()
+
+# =====================================================
+# FEATURE IMPORTANCE (random forest)
+# =====================================================
+
+importances = rf.feature_importances_
+
+plt.figure(figsize=(8, 4))
+plt.barh(FEATURES, importances)
+plt.xlabel("Importance")
+plt.title("Feature Importance - Random Forest")
+plt.tight_layout()
+plt.show()
+
+# =====================================================
+# FEATURE IMPORTANCE (KNN)
+# =====================================================
+
+from sklearn.inspection import permutation_importance
+
+perm = permutation_importance(
+    knn,
+    X_test_s,
+    y_test,
+    n_repeats=10,
+    random_state=42,
+    scoring="accuracy"
+)
+
+knn_importance = perm.importances_mean
+
+plt.figure(figsize=(8, 4))
+plt.barh(FEATURES, knn_importance)
+plt.xlabel("Decrease in Accuracy")
+plt.title("Feature Importance - KNN (Permutation)")
+plt.tight_layout()
+plt.show()
+
 
 # =====================================================
 # VISUALISASI SCORE PREDICTION ERROR
