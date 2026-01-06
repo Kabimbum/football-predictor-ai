@@ -5,62 +5,11 @@
     <title>Football Match Predictor</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
 
-    <!-- Google Font -->
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;500;700&display=swap" rel="stylesheet">
 
-    <!-- Styling (tetap sama seperti yang kamu pakai) -->
     <style>
-       .result-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);  /* selalu 3 kolom */
-    gap: 15px;
-    margin-top: 20px;
-}
-
-
-        .card {
-            background: #1f2a48;
-            padding: 15px;
-            border-radius: 12px;
-            text-align: center;
-            box-shadow: 0 0 8px #0006;
-        }
-
-        .card-title {
-            font-weight: 600;
-            font-size: 14px;
-            color: #4cc9f0;
-            margin-bottom: 5px;
-        }
-
-        .card-value {
-            font-size: 20px;
-            font-weight: bold;
-            margin-top: 5px;
-        }
-
-        .winner-box {
-            background: #26345e;
-            padding: 20px;
-            border-radius: 15px;
-            text-align: center;
-            margin-top: 20px;
-            box-shadow: 0 0 10px #0007;
-        }
-        .winner-title {
-            font-size: 18px;
-            font-weight: bold;
-            color: #4cc9f0;
-        }
-        .winner-value {
-            font-size: 32px;
-            font-weight: bold;
-            margin-top: 8px;
-            color: #72eaff;
-        }
-
         body {
-            background: #0d1b2a;   /* warna gelap */
+            background: #0d1b2a;
             font-family: 'Poppins', sans-serif;
             color: white;
             margin: 0;
@@ -68,14 +17,15 @@
         }
 
         .container {
-    max-width: 900px;  /* dari 500 → 900 */
-    margin: auto;
-    background: #1b263b;
-    padding: 25px;
-    border-radius: 15px;
-    box-shadow: 0 0 12px #0007;
-}
+            max-width: 900px;
+            margin: auto;
+            background: #1b263b;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 0 12px #0007;
+        }
 
+        h2 { text-align: center; }
 
         select, button {
             width: 100%;
@@ -91,139 +41,116 @@
             background: #4cc9f0;
             font-weight: bold;
             cursor: pointer;
+            margin-top: 20px;
         }
 
-        /* small styling for team-score box */
         .score-box {
-            margin-top: 16px;
-            padding: 12px;
-            border-radius: 10px;
-            background: rgba(255,255,255,0.04);
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 12px;
+            background: rgba(255,255,255,0.05);
             text-align: center;
             font-weight: 600;
+            display: none;
         }
 
-       /* GRID untuk berjajar 3 kolom */
-#result_box {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 15px;
-    margin-top: 20px;
-}
+        #result_box {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-top: 20px;
+        }
 
-/* kotak hasil, mengikuti DESAIN CARD ASLI kamu */
-.result-card {
-    background: #1f2a48;         /* warna sama seperti card kamu */
-    padding: 15px;
-    border-radius: 12px;
-    text-align: center;
-    box-shadow: 0 0 8px #0006;
-}
+        .card {
+            background: #1f2a48;
+            padding: 15px;
+            border-radius: 12px;
+            text-align: center;
+            box-shadow: 0 0 8px #0006;
+        }
 
-/* judul dalam kotak */
-.result-title {
-    font-weight: 600;
-    font-size: 14px;
-    color: #4cc9f0;
-    margin-bottom: 5px;
-}
+        .card-title {
+            font-size: 14px;
+            color: #4cc9f0;
+        }
 
-/* nilai dalam kotak */
-.result-value {
-    font-size: 20px;
-    font-weight: bold;
-    margin-top: 5px;
-}
-
-
-
+        .card-value {
+            font-size: 20px;
+            font-weight: bold;
+            margin-top: 6px;
+        }
     </style>
 </head>
 
 <body>
-
 <div class="container">
-    <h2>Football Match Prediction</h2>
 
-    <label>Home Team:</label>
-    <select id="home_team">
-        <option value="">-- Select Team --</option>
-        {% for t in teams %}
-            <option value="{{ t }}">{{ t }}</option>
-        {% endfor %}
-    </select>
+<h2>⚽ Football Match Predictor</h2>
 
-    <label style="margin-top:20px;">Away Team:</label>
-    <select id="away_team">
-        <option value="">-- Select Team --</option>
-        {% for t in teams %}
-            <option value="{{ t }}">{{ t }}</option>
-        {% endfor %}
-    </select>
+<label>Home Team</label>
+<select id="home_team">
+    <option value="">-- Select Team --</option>
+    {% for t in teams %}
+        <option value="{{ t }}">{{ t }}</option>
+    {% endfor %}
+</select>
 
-    <button onclick="predict()">Predict Match</button>
+<label style="margin-top:15px;">Away Team</label>
+<select id="away_team">
+    <option value="">-- Select Team --</option>
+    {% for t in teams %}
+        <option value="{{ t }}">{{ t }}</option>
+    {% endfor %}
+</select>
 
-    <!-- Score ringkas -->
-    <div id="team-score" class="score-box" style="display:none"></div>
+<button onclick="predict()">Predict Match</button>
 
-    <!-- HASIL MODEL dalam GRID -->
-    <div id="result_box"></div>
+<div id="team-score" class="score-box"></div>
+<div id="result_box"></div>
 
 </div>
-
 
 <script>
 function predict() {
 
-    const teamScoreBox = document.getElementById("team-score");
-    const resultBox = document.getElementById("result_box");
-
-    teamScoreBox.style.display = "none";
-    resultBox.innerHTML = "";
-
-    let home = document.getElementById("home_team").value;
-    let away = document.getElementById("away_team").value;
+    const home = document.getElementById("home_team").value;
+    const away = document.getElementById("away_team").value;
 
     if (!home || !away) {
-        alert("Pilih tim dulu Japrut!");
-        return;
-    }
-    if (home === away) {
-        alert("Tim Home dan Away tidak boleh sama!");
+        alert("Home & Away wajib diisi");
         return;
     }
 
-    let formData = new FormData();
-    formData.append("home_team", home);
-    formData.append("away_team", away);
+    if (home === away) {
+        alert("Home dan Away tidak boleh sama");
+        return;
+    }
+
+    const fd = new FormData();
+    fd.append("home_team", home);
+    fd.append("away_team", away);
 
     fetch("/predict", {
         method: "POST",
-        body: formData
+        body: fd
     })
-    .then(res => {
-        if (!res.ok) throw new Error("Server error " + res.status);
-        return res.json();
-    })
+    .then(res => res.json())
     .then(data => {
 
-        if (data.error) {
-            throw new Error(data.error);
-        }
+        if (data.error) throw new Error(data.error);
 
-        teamScoreBox.style.display = "block";
-        teamScoreBox.innerHTML = `
-            <div style="display:flex;justify-content:space-between;">
-                <strong>${data.home_team}</strong>
-                <strong style="font-size:20px">${data.home_goals}</strong>
+        const scoreBox = document.getElementById("team-score");
+        scoreBox.style.display = "block";
+        scoreBox.innerHTML = `
+            <div style="font-size:24px">
+                ${data.home_team} ${data.home_goals} - ${data.away_goals} ${data.away_team}
             </div>
-            <div style="display:flex;justify-content:space-between;margin-top:6px;">
-                <strong>${data.away_team}</strong>
-                <strong style="font-size:20px">${data.away_goals}</strong>
+            <div style="margin-top:8px">
+                Final Winner: <b>${data.Final_Winner}</b>
             </div>
         `;
 
-        resultBox.innerHTML = `
+        document.getElementById("result_box").innerHTML = `
             <div class="card"><div class="card-title">Random Forest</div><div class="card-value">${data.RandomForest}</div></div>
             <div class="card"><div class="card-title">XGBoost</div><div class="card-value">${data.XGBoost}</div></div>
             <div class="card"><div class="card-title">KNN</div><div class="card-value">${data.KNN}</div></div>
@@ -232,26 +159,14 @@ function predict() {
             <div class="card"><div class="card-title">XGB Confidence</div><div class="card-value">${data.XGB_conf}</div></div>
             <div class="card"><div class="card-title">KNN Confidence</div><div class="card-value">${data.KNN_conf}</div></div>
 
-            <div class="card"><div class="card-title">RF F1 Score</div><div class="card-value">${data.RF_f1}</div></div>
-            <div class="card"><div class="card-title">XGB F1 Score</div><div class="card-value">${data.XGB_f1}</div></div>
-            <div class="card"><div class="card-title">KNN F1 Score</div><div class="card-value">${data.KNN_f1}</div></div>
-
             <div class="card"><div class="card-title">RF Score</div><div class="card-value">${data.RF_score}</div></div>
             <div class="card"><div class="card-title">XGB Score</div><div class="card-value">${data.XGB_score}</div></div>
             <div class="card"><div class="card-title">Ensemble Score</div><div class="card-value">${data.Ensemble_score}</div></div>
-
-            <div class="winner-box" style="grid-column:1/-1;">
-                <div class="winner-title">Final Winner</div>
-                <div class="winner-value">${data.Final_Winner}</div>
-            </div>
         `;
     })
-    .catch(err => {
-        resultBox.innerHTML = `
-            <p style="color:red;text-align:center;">
-                Error: ${err.message}
-            </p>
-        `;
-    });
+    .catch(err => alert(err.message));
 }
 </script>
+
+</body>
+</html>

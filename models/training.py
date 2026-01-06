@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
+import joblib
 
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, mean_absolute_error
@@ -12,106 +13,347 @@ from xgboost import XGBClassifier, XGBRegressor
 from sklearn.inspection import permutation_importance
 
 # =====================================================
-# PATH
+# PATH SETUP
 # =====================================================
+
+# Mendapatkan direktori root proyek
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Menentukan path file CSV di folder 'data' di dalam root proyek
 DATA_PATH = os.path.join(BASE_DIR, "data", "EnglandCSV.csv")
 
+
+
+
+# Menampilkan path file yang akan dibaca (untuk memastikan path benar)
 print("Loading dataset from:", DATA_PATH)
+
+# Membaca file CSV ke dalam DataFrame pandas
 df = pd.read_csv(DATA_PATH)
+
+# Menampilkan jumlah baris dan kolom dataset awal
 print("Raw shape:", df.shape)
 
 # =====================================================
-# DATE PARSING (FIX WARNING)
+# DATE PARSING (HANDLE DATE FORMAT & PREVENT WARNINGS)
 # =====================================================
+
+# Mengecek apakah kolom "Date" ada di dalam DataFrame
 if "Date" in df.columns:
-    df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
+
+    # Mengonversi kolom "Date" menjadi tipe datetime
+    # - dayfirst=True  → format tanggal diasumsikan DD-MM-YYYY
+    # - errors="coerce" → nilai tanggal tidak valid akan diubah menjadi NaT
+    #   (Not a Time) agar tidak menyebabkan crash pada program
+    df["Date"] = pd.to_datetime(
+        df["Date"],
+        dayfirst=True,
+        errors="coerce"
+    )
+
+    # Menghapus baris yang memiliki nilai Date = NaT
+    # Baris ini biasanya berasal dari data rusak atau format tanggal tidak konsisten
     df = df.dropna(subset=["Date"])
-    df = df.sort_values("Date").reset_index(drop=True)
+
+    # Mengurutkan data berdasarkan tanggal secara kronologis (ascending)
+    # Hal ini penting untuk analisis time-series atau data berbasis urutan waktu
+    df = df.sort_values("Date")
+
+    # Mereset index DataFrame setelah penghapusan dan pengurutan data
+    # drop=True → index lama tidak disimpan sebagai kolom baru
+    df = df.reset_index(drop=True)
+
 else:
+    # Jika kolom "Date" tidak ditemukan,
+    # program dihentikan dan menampilkan pesan error yang jelas
     raise ValueError("Column 'Date' not found in dataset")
 
-# =====================================================
-# FILTER DATA 2013-2025
-# =====================================================
-df = df[(df["Date"].dt.year >= 2013) & (df["Date"].dt.year <= 2025)]
-df = df.reset_index(drop=True)
-print(f"Filtered shape (2013-2025): {df.shape}")
 
 # =====================================================
-# TARGET ENCODING
+# FILTER DATA BERDASARKAN RENTANG TAHUN (2013–2025)
 # =====================================================
+
+# Melakukan penyaringan data berdasarkan kolom "Date"
+# Hanya baris dengan tahun antara 2013 sampai 2025 yang dipertahankan
+# - df["Date"].dt.year digunakan untuk mengekstrak informasi tahun dari tipe datetime
+# - Operator & digunakan untuk menggabungkan dua kondisi logika
+df = df[
+    (df["Date"].dt.year >= 2013) &
+    (df["Date"].dt.year <= 2025)
+]
+
+# Mereset index DataFrame setelah proses filtering
+# drop=True memastikan index lama tidak disimpan sebagai kolom baru
+df = df.reset_index(drop=True)
+
+# Menampilkan ukuran DataFrame hasil filtering
+# Informasi ini berguna untuk validasi bahwa proses filtering berhasil
+print(f"Filtered shape (2013–2025): {df.shape}")
+
+# =====================================================
+# TARGET ENCODING (LABEL ENCODER)
+# =====================================================
+
+# Membuat objek LabelEncoder dari sklearn
+# LabelEncoder digunakan untuk mengubah label kategorikal
+# (dalam hal ini hasil pertandingan: A, D, H)
+# menjadi representasi numerik yang dapat diproses oleh model machine learning
 le = LabelEncoder()
+
+# Mengonversi kolom "FT Result" menjadi label numerik
+# Contoh hasil encoding (tergantung urutan alfabet):
+# A → 0, D → 1, H → 2
+# Kolom baru bernama "target" akan digunakan sebagai variabel target (y)
 df["target"] = le.fit_transform(df["FT Result"])  # A, D, H
 
 # =====================================================
-# VISUALISASI DISTRIBUSI LABEL
+# VISUALISASI DISTRIBUSI LABEL (CLASS DISTRIBUTION)
 # =====================================================
+
+# Membuat figure baru untuk plot
+# plt.figure() dipanggil tanpa ukuran khusus agar default Matplotlib digunakan
 plt.figure()
+
+# Menghitung jumlah kemunculan masing-masing kelas
+# kemudian divisualisasikan dalam bentuk diagram batang (bar chart)
 df["FT Result"].value_counts().plot(kind="bar")
+
+# Memberikan judul pada grafik
+# Judul ini menjelaskan bahwa grafik menunjukkan distribusi hasil pertandingan
 plt.title("Distribusi Hasil Pertandingan")
+
+# Memberikan label pada sumbu X
+# Menunjukkan kategori hasil pertandingan:
+# H = Home Win, D = Draw, A = Away Win
 plt.xlabel("Result (H / D / A)")
+
+# Memberikan label pada sumbu Y
+# Menunjukkan jumlah pertandingan pada masing-masing kelas
 plt.ylabel("Jumlah Match")
+
+# Menampilkan grafik ke layar
 plt.show()
 
+
+## =====================================================
+# TRANSFORMASI DATA KE FORMAT LONG (HOME + AWAY)
 # =====================================================
-# LONG FORMAT (HOME + AWAY)
-# =====================================================
-home = df[["Date", "HomeTeam", "FTH Goals", "FTA Goals", "FT Result"]].copy()
+
+# -----------------------------
+# DATA TIM KANDANG (HOME)
+# -----------------------------
+
+# Memilih kolom yang relevan untuk tim kandang:
+# - Date        : tanggal pertandingan
+# - HomeTeam    : nama tim kandang
+# - FTH Goals   : jumlah gol tim kandang (Goals For)
+# - FTA Goals   : jumlah gol tim tandang (Goals Against)
+# - FT Result   : hasil akhir pertandingan
+home = df[[
+    "Date",
+    "HomeTeam",
+    "FTH Goals",
+    "FTA Goals",
+    "FT Result"
+]].copy()  # copy() digunakan untuk menghindari SettingWithCopyWarning
+
+# Mengganti nama kolom agar konsisten dan mudah dianalisis
+# Team  → nama tim
+# GF    → Goals For (gol yang dicetak tim)
+# GA    → Goals Against (gol yang kebobolan)
+# Result → hasil pertandingan dari perspektif pertandingan
 home.columns = ["Date", "Team", "GF", "GA", "Result"]
+
+# Menambahkan indikator bahwa baris ini berasal dari tim kandang
+# 1 = Home, 0 = Away
 home["is_home"] = 1
 
-away = df[["Date", "AwayTeam", "FTA Goals", "FTH Goals", "FT Result"]].copy()
+
+# -----------------------------
+# DATA TIM TANDANG (AWAY)
+# -----------------------------
+
+# Memilih kolom yang relevan untuk tim tandang
+# Perhatikan bahwa posisi gol dibalik:
+# - FTA Goals → GF (gol tim tandang)
+# - FTH Goals → GA (gol yang kebobolan)
+away = df[[
+    "Date",
+    "AwayTeam",
+    "FTA Goals",
+    "FTH Goals",
+    "FT Result"
+]].copy()
+
+# Menyeragamkan nama kolom dengan dataset home
 away.columns = ["Date", "Team", "GF", "GA", "Result"]
+
+# Menambahkan indikator bahwa baris ini berasal dari tim tandang
 away["is_home"] = 0
 
-long_df = pd.concat([home, away]).sort_values("Date").reset_index(drop=True)
+
+# -----------------------------
+# GABUNGKAN DATA HOME & AWAY
+# -----------------------------
+
+# Menggabungkan dataset home dan away ke dalam satu DataFrame
+# sehingga setiap baris merepresentasikan performa satu tim
+# dalam satu pertandingan
+long_df = pd.concat([home, away])
+
+# Mengurutkan data berdasarkan tanggal pertandingan
+# Hal ini penting untuk analisis time-series atau rolling statistics
+long_df = long_df.sort_values("Date")
+
+# Mereset index agar tetap berurutan setelah proses penggabungan dan pengurutan
+long_df = long_df.reset_index(drop=True)
 
 # =====================================================
-# POINTS CALCULATION
+# PERHITUNGAN POIN PERTANDINGAN (POINTS CALCULATION)
 # =====================================================
+
+# Fungsi untuk menghitung poin yang diperoleh sebuah tim
+# berdasarkan hasil akhir pertandingan dan status kandang/tandang
 def calc_points(row):
+    """
+    Menghitung poin pertandingan untuk satu tim.
+    
+    Aturan poin (standar liga sepak bola):
+    - Menang  → 3 poin
+    - Seri    → 1 poin
+    - Kalah   → 0 poin
+
+    Parameter:
+    row : pandas.Series
+        Satu baris data yang merepresentasikan satu tim
+        dalam satu pertandingan (format long).
+
+    Return:
+    int
+        Jumlah poin yang diperoleh tim pada pertandingan tersebut.
+    """
+
+    # Jika hasil pertandingan seri (Draw),
+    # baik tim kandang maupun tandang mendapatkan 1 poin
     if row["Result"] == "D":
         return 1
+
+    # Jika tim bermain sebagai kandang (is_home = 1)
+    # dan hasil pertandingan adalah Home Win (H),
+    # maka tim kandang menang dan memperoleh 3 poin
     if row["is_home"] == 1 and row["Result"] == "H":
         return 3
+
+    # Jika tim bermain sebagai tandang (is_home = 0)
+    # dan hasil pertandingan adalah Away Win (A),
+    # maka tim tandang menang dan memperoleh 3 poin
     if row["is_home"] == 0 and row["Result"] == "A":
         return 3
+
+    # Kondisi selain di atas berarti tim kalah
+    # sehingga tidak memperoleh poin
     return 0
 
+
+# Menerapkan fungsi calc_points ke setiap baris DataFrame long_df
+# axis=1 menandakan fungsi dijalankan per baris
+# Hasil perhitungan disimpan pada kolom baru bernama "Points"
 long_df["Points"] = long_df.apply(calc_points, axis=1)
 
+
 # =====================================================
-# ROLLING FEATURES (LAST 5 MATCHES)
+# PEMBENTUKAN FITUR ROLLING (5 PERTANDINGAN TERAKHIR)
 # =====================================================
+
+# Mengurutkan data berdasarkan nama tim dan tanggal pertandingan
+# Langkah ini WAJIB dilakukan sebelum rolling,
+# agar perhitungan dilakukan secara kronologis untuk setiap tim
 long_df = long_df.sort_values(["Team", "Date"])
 
+
+# -----------------------------------------------------
+# FORM TIM (RATA-RATA POIN 5 MATCH TERAKHIR)
+# -----------------------------------------------------
+
+# Menghitung rata-rata poin dari 5 pertandingan terakhir
+# untuk setiap tim secara terpisah
+#
+# groupby("Team") → rolling dihitung per tim
+# rolling(5)      → jendela 5 pertandingan terakhir
+# min_periods=1   → jika tim belum punya 5 match,
+#                   tetap dihitung menggunakan data yang tersedia
 long_df["form"] = (
-    long_df.groupby("Team")["Points"]
-    .transform(lambda x: x.rolling(5, min_periods=1).mean())
+    long_df
+    .groupby("Team")["Points"]
+    .transform(
+        lambda x: x.rolling(window=5, min_periods=1).mean()
+    )
 )
 
+
+# -----------------------------------------------------
+# RATA-RATA GOALS FOR (GF) – 5 MATCH TERAKHIR
+# -----------------------------------------------------
+
+# Menghitung rata-rata jumlah gol yang dicetak tim
+# dalam 5 pertandingan terakhir
 long_df["gf_avg"] = (
-    long_df.groupby("Team")["GF"]
-    .transform(lambda x: x.rolling(5, min_periods=1).mean())
+    long_df
+    .groupby("Team")["GF"]
+    .transform(
+        lambda x: x.rolling(window=5, min_periods=1).mean()
+    )
 )
 
+
+# -----------------------------------------------------
+# RATA-RATA GOALS AGAINST (GA) – 5 MATCH TERAKHIR
+# -----------------------------------------------------
+
+# Menghitung rata-rata jumlah gol yang kebobolan tim
+# dalam 5 pertandingan terakhir
 long_df["ga_avg"] = (
-    long_df.groupby("Team")["GA"]
-    .transform(lambda x: x.rolling(5, min_periods=1).mean())
+    long_df
+    .groupby("Team")["GA"]
+    .transform(
+        lambda x: x.rolling(window=5, min_periods=1).mean()
+    )
 )
 
+
 # =====================================================
-# MERGE BACK TO MATCH DATA
+# MENGGABUNGKAN (MERGE) FITUR TIM KEMBALI KE DATA MATCH
 # =====================================================
+
+# -----------------------------------------------------
+# FITUR TIM KANDANG (HOME FEATURES)
+# -----------------------------------------------------
+
+# Memilih baris dari long_df yang merepresentasikan tim kandang
+# serta hanya mengambil fitur-fitur yang relevan untuk modeling
 home_feat = long_df[long_df["is_home"] == 1][
     ["Date", "Team", "form", "gf_avg", "ga_avg"]
 ]
 
+# -----------------------------------------------------
+# FITUR TIM TANDANG (AWAY FEATURES)
+# -----------------------------------------------------
+
+# Memilih baris dari long_df yang merepresentasikan tim tandang
+# serta hanya mengambil fitur-fitur yang relevan untuk modeling
 away_feat = long_df[long_df["is_home"] == 0][
     ["Date", "Team", "form", "gf_avg", "ga_avg"]
 ]
 
+# -----------------------------------------------------
+# MERGE FITUR HOME KE DATA MATCH UTAMA
+# -----------------------------------------------------
+
+# Menggabungkan fitur tim kandang ke DataFrame pertandingan (df)
+# - left_on  → kunci join berasal dari df (Date + HomeTeam)
+# - right_on → kunci join berasal dari home_feat (Date + Team)
+# - how="left" → mempertahankan seluruh data match,
+#                meskipun fitur tidak ditemukan (NaN)
 df = df.merge(
     home_feat,
     left_on=["Date", "HomeTeam"],
@@ -119,6 +361,13 @@ df = df.merge(
     how="left"
 )
 
+# -----------------------------------------------------
+# MERGE FITUR AWAY KE DATA MATCH UTAMA
+# -----------------------------------------------------
+
+# Menggabungkan fitur tim tandang ke DataFrame pertandingan (df)
+# - suffixes digunakan untuk membedakan fitur home dan away
+#   setelah proses merge
 df = df.merge(
     away_feat,
     left_on=["Date", "AwayTeam"],
@@ -128,92 +377,221 @@ df = df.merge(
 )
 
 # =====================================================
-# FEATURES
+# PEMILIHAN FITUR DAN PEMBENTUKAN DATASET MODEL
 # =====================================================
+
+# Daftar fitur numerik yang akan digunakan sebagai input model
+# Fitur-fitur ini merepresentasikan performa historis tim
+# baik kandang maupun tandang (berdasarkan rolling 5 pertandingan terakhir)
 FEATURES = [
-    "form_home", "form_away",
-    "gf_avg_home", "gf_avg_away",
-    "ga_avg_home", "ga_avg_away"
+    "form_home",     # Rata-rata poin 5 match terakhir tim kandang
+    "form_away",     # Rata-rata poin 5 match terakhir tim tandang
+    "gf_avg_home",   # Rata-rata gol dicetak tim kandang (5 match terakhir)
+    "gf_avg_away",   # Rata-rata gol dicetak tim tandang (5 match terakhir)
+    "ga_avg_home",   # Rata-rata gol kebobolan tim kandang (5 match terakhir)
+    "ga_avg_away"    # Rata-rata gol kebobolan tim tandang (5 match terakhir)
 ]
 
+# Menghapus baris yang memiliki nilai kosong (NaN)
+# baik pada fitur maupun pada variabel target
+# Hal ini penting agar model tidak menerima input yang tidak lengkap
 df_model = df.dropna(subset=FEATURES + ["target"])
 
+
+# -----------------------------------------------------
+# PEMBENTUKAN INPUT (X) DAN TARGET (y)
+# -----------------------------------------------------
+
+# Matriks fitur (X) yang akan digunakan untuk training dan evaluasi model
 X = df_model[FEATURES]
+
+# Target klasifikasi:
+# hasil akhir pertandingan yang telah di-encode
+# (misal: A=0, D=1, H=2)
 y = df_model["target"]
+
+# -----------------------------------------------------
+# TARGET TAMBAHAN UNTUK REGRESI GOL (OPSIONAL)
+# -----------------------------------------------------
+
+# Target regresi untuk memprediksi jumlah gol tim kandang
 y_home_goals = df_model["FTH Goals"]
+
+# Target regresi untuk memprediksi jumlah gol tim tandang
 y_away_goals = df_model["FTA Goals"]
 
+
 # =====================================================
-# TIME-BASED SPLIT
+# PEMBAGIAN DATA BERBASIS WAKTU (TIME-BASED SPLIT)
 # =====================================================
+
+# Menentukan indeks pemisah data training dan testing
+# 80% data awal digunakan untuk training
+# 20% data terakhir digunakan untuk testing
+# Pendekatan ini menjaga urutan waktu sehingga
+# tidak terjadi data leakage dari masa depan ke masa lalu
 split_idx = int(len(df_model) * 0.8)
 
+# -----------------------------
+# DATA FITUR (X)
+# -----------------------------
+
+# Data training: pertandingan-pertandingan awal (historical data)
 X_train = X.iloc[:split_idx]
+
+# Data testing: pertandingan-pertandingan terbaru
 X_test  = X.iloc[split_idx:]
 
+
+# -----------------------------
+# TARGET KLASIFIKASI
+# -----------------------------
+
+# Target hasil pertandingan untuk data training
 y_train = y.iloc[:split_idx]
+
+# Target hasil pertandingan untuk data testing
 y_test  = y.iloc[split_idx:]
 
+
+# -----------------------------
+# TARGET REGRESI GOL (HOME & AWAY)
+# -----------------------------
+
+# Target jumlah gol tim kandang (training)
 y_home_train = y_home_goals.iloc[:split_idx]
+
+# Target jumlah gol tim kandang (testing)
 y_home_test = y_home_goals.iloc[split_idx:]
 
+# Target jumlah gol tim tandang (training)
 y_away_train = y_away_goals.iloc[:split_idx]
+
+# Target jumlah gol tim tandang (testing)
 y_away_test = y_away_goals.iloc[split_idx:]
 
+
 # =====================================================
-# SCALING (FOR KNN)
+# NORMALISASI FITUR (SCALING) – KHUSUS UNTUK MODEL KNN
 # =====================================================
+
+# Membuat objek StandardScaler
+# StandardScaler melakukan transformasi:
+# (x - mean) / standard deviation
+# sehingga setiap fitur memiliki mean = 0 dan std = 1
 scaler = StandardScaler()
+
+# Melakukan fitting scaler HANYA pada data training
+# untuk mencegah kebocoran informasi dari data testing
 X_train_s = scaler.fit_transform(X_train)
+
+# Menerapkan scaler yang sama ke data testing
+# tanpa melakukan fit ulang
 X_test_s  = scaler.transform(X_test)
 
 # =====================================================
-# CLASSIFICATION MODELS
+# PEMODELAN KLASIFIKASI HASIL PERTANDINGAN
 # =====================================================
+
+# -----------------------------------------------------
+# RANDOM FOREST CLASSIFIER
+# -----------------------------------------------------
+
+# Membuat model Random Forest
+# Random Forest adalah ensemble learning berbasis decision tree
+# yang mampu menangkap hubungan non-linear antar fitur
 rf = RandomForestClassifier(
-    n_estimators=300,
-    max_depth=12,
-    random_state=42
+    n_estimators=300,   # Jumlah pohon keputusan dalam forest
+    max_depth=12,      # Kedalaman maksimum setiap pohon
+    random_state=42    # Seed untuk memastikan hasil eksperimen reproducible
 )
+
+# Melatih model Random Forest menggunakan data training
 rf.fit(X_train, y_train)
+
+# Melakukan prediksi hasil pertandingan pada data testing
 rf_pred = rf.predict(X_test)
 
+
+# -----------------------------------------------------
+# XGBOOST CLASSIFIER
+# -----------------------------------------------------
+
+# Membuat model XGBoost untuk klasifikasi multi-kelas
+# XGBoost menggunakan teknik gradient boosting
+# yang sangat efektif untuk data tabular
 xgb = XGBClassifier(
-    n_estimators=300,
-    learning_rate=0.05,
-    max_depth=6,
-    subsample=0.9,
-    colsample_bytree=0.9,
-    objective="multi:softprob",
-    num_class=3,
-    random_state=42,
-    eval_metric="mlogloss"
+    n_estimators=300,          # Jumlah boosting rounds (trees)
+    learning_rate=0.05,        # Learning rate untuk memperlambat proses learning
+    max_depth=6,               # Kedalaman maksimum tree
+    subsample=0.9,             # Proporsi data yang digunakan per tree
+    colsample_bytree=0.9,      # Proporsi fitur yang digunakan per tree
+    objective="multi:softprob",# Objective untuk multi-class classification
+    num_class=3,               # Jumlah kelas target (A, D, H)
+    random_state=42,           # Seed agar hasil konsisten
+    eval_metric="mlogloss"     # Metric evaluasi internal selama training
 )
+
+# Melatih model XGBoost menggunakan data training
 xgb.fit(X_train, y_train)
+
+# Melakukan prediksi kelas pada data testing
 xgb_pred = xgb.predict(X_test)
 
-knn = KNeighborsClassifier(n_neighbors=15)
+
+# -----------------------------------------------------
+# K-NEAREST NEIGHBORS (KNN)
+# -----------------------------------------------------
+
+# Membuat model KNN
+# KNN adalah algoritma berbasis jarak,
+# sehingga sangat sensitif terhadap skala fitur
+knn = KNeighborsClassifier(
+    n_neighbors=15  # Jumlah tetangga terdekat yang digunakan
+)
+
+# Melatih model KNN menggunakan data training yang SUDAH diskalakan
 knn.fit(X_train_s, y_train)
+
+# Melakukan prediksi menggunakan data testing yang SUDAH diskalakan
 knn_pred = knn.predict(X_test_s)
 
+
 # =====================================================
-# REGRESSION MODELS FOR SCORE PREDICTION
+# MODEL REGRESI UNTUK PREDIKSI SKOR PERTANDINGAN
 # =====================================================
+
 print("\n=== TRAINING SCORE PREDICTION MODELS ===")
 
-# Model untuk prediksi gol Home
+
+# -----------------------------------------------------
+# MODEL REGRESI: PREDIKSI GOL TIM KANDANG (HOME GOALS)
+# -----------------------------------------------------
+
+# Membuat model XGBoost Regressor untuk memprediksi
+# jumlah gol yang dicetak oleh tim kandang
 xgb_home_score = XGBRegressor(
-    n_estimators=300,
-    learning_rate=0.05,
-    max_depth=6,
-    subsample=0.9,
-    colsample_bytree=0.9,
-    random_state=42
+    n_estimators=300,     # Jumlah pohon (boosting rounds)
+    learning_rate=0.05,   # Learning rate untuk pembelajaran bertahap
+    max_depth=6,          # Kedalaman maksimum tiap pohon
+    subsample=0.9,        # Proporsi data yang digunakan per tree
+    colsample_bytree=0.9,# Proporsi fitur yang digunakan per tree
+    random_state=42       # Seed agar hasil eksperimen konsisten
 )
+
+# Melatih model menggunakan data training
 xgb_home_score.fit(X_train, y_home_train)
+
+# Melakukan prediksi jumlah gol tim kandang pada data testing
 home_pred = xgb_home_score.predict(X_test)
 
-# Model untuk prediksi gol Away
+
+# -----------------------------------------------------
+# MODEL REGRESI: PREDIKSI GOL TIM TANDANG (AWAY GOALS)
+# -----------------------------------------------------
+
+# Membuat model XGBoost Regressor untuk memprediksi
+# jumlah gol yang dicetak oleh tim tandang
 xgb_away_score = XGBRegressor(
     n_estimators=300,
     learning_rate=0.05,
@@ -222,68 +600,183 @@ xgb_away_score = XGBRegressor(
     colsample_bytree=0.9,
     random_state=42
 )
+
+# Melatih model menggunakan data training
 xgb_away_score.fit(X_train, y_away_train)
+
+# Melakukan prediksi jumlah gol tim tandang pada data testing
 away_pred = xgb_away_score.predict(X_test)
 
-# Evaluasi Score Prediction
+
+# =====================================================
+# EVALUASI MODEL PREDIKSI SKOR
+# =====================================================
+
+# -----------------------------------------------------
+# MEAN ABSOLUTE ERROR (MAE)
+# -----------------------------------------------------
+
+# Menghitung MAE untuk prediksi gol tim kandang
 home_mae = mean_absolute_error(y_home_test, home_pred)
+
+# Menghitung MAE untuk prediksi gol tim tandang
 away_mae = mean_absolute_error(y_away_test, away_pred)
 
-# Round predictions untuk exact match accuracy
+
+# -----------------------------------------------------
+# EXACT SCORE EVALUATION (SETELAH PEMBULATAN)
+# -----------------------------------------------------
+
+# Membulatkan hasil prediksi ke bilangan bulat terdekat
+# karena skor pertandingan bersifat diskrit
 home_pred_rounded = np.round(home_pred)
 away_pred_rounded = np.round(away_pred)
 
-# Exact score accuracy
+# Menghitung akurasi prediksi skor tepat (exact match)
+# secara terpisah untuk tim kandang dan tandang
 home_exact_acc = accuracy_score(y_home_test, home_pred_rounded)
 away_exact_acc = accuracy_score(y_away_test, away_pred_rounded)
 
-# Combined exact score accuracy (kedua skor harus tepat)
-exact_match = ((home_pred_rounded == y_home_test.values) & 
-               (away_pred_rounded == y_away_test.values))
+
+# -----------------------------------------------------
+# AKURASI SKOR PERTANDINGAN LENGKAP
+# -----------------------------------------------------
+
+# Exact score accuracy:
+# prediksi dianggap benar jika skor home DAN away
+# keduanya tepat secara bersamaan
+exact_match = (
+    (home_pred_rounded == y_home_test.values) &
+    (away_pred_rounded == y_away_test.values)
+)
 exact_score_acc = exact_match.sum() / len(y_home_test)
 
-# Goal difference accuracy
+
+# -----------------------------------------------------
+# GOAL DIFFERENCE ACCURACY
+# -----------------------------------------------------
+
+# Menghitung selisih gol prediksi dan aktual
 pred_diff = home_pred_rounded - away_pred_rounded
 actual_diff = y_home_test.values - y_away_test.values
-diff_acc = accuracy_score(np.sign(actual_diff), np.sign(pred_diff))
 
-# Within 1 goal accuracy
+# Mengevaluasi apakah arah hasil pertandingan
+# (menang, seri, kalah) berhasil diprediksi
+diff_acc = accuracy_score(
+    np.sign(actual_diff),
+    np.sign(pred_diff)
+)
+
+
+# -----------------------------------------------------
+# WITHIN ±1 GOAL ACCURACY
+# -----------------------------------------------------
+
+# Mengecek apakah prediksi gol home berada dalam selisih ±1 gol
 home_within_1 = np.abs(home_pred_rounded - y_home_test.values) <= 1
-away_within_1 = np.abs(away_pred_rounded - y_away_test.values) <= 1
-within_1_acc = (home_within_1 & away_within_1).sum() / len(y_home_test)
 
-print("\n" + "="*60)
+# Mengecek apakah prediksi gol away berada dalam selisih ±1 gol
+away_within_1 = np.abs(away_pred_rounded - y_away_test.values) <= 1
+
+# Akurasi dihitung jika kedua prediksi (home & away)
+# berada dalam toleransi ±1 gol
+within_1_acc = (
+    home_within_1 & away_within_1
+).sum() / len(y_home_test)
+
+
+# =====================================================
+# LAPORAN PERFORMA PREDIKSI SKOR PERTANDINGAN
+# =====================================================
+
+# Header laporan agar output mudah dibaca di console
+print("\n" + "=" * 60)
 print("SCORE PREDICTION PERFORMANCE REPORT")
-print("="*60)
+print("=" * 60)
+
+
+# -----------------------------------------------------
+# MEAN ABSOLUTE ERROR (MAE)
+# -----------------------------------------------------
+
+# MAE mengukur rata-rata selisih absolut antara
+# prediksi dan nilai aktual (semakin kecil semakin baik)
 print(f"\n📊 Mean Absolute Error (MAE):")
 print(f"   Home Goals MAE: {home_mae:.3f}")
 print(f"   Away Goals MAE: {away_mae:.3f}")
-print(f"   Average MAE   : {(home_mae + away_mae)/2:.3f}")
 
+# Rata-rata MAE dari prediksi gol home dan away
+# Digunakan sebagai indikator error keseluruhan model skor
+print(f"   Average MAE   : {(home_mae + away_mae) / 2:.3f}")
+
+
+# -----------------------------------------------------
+# EXACT GOAL ACCURACY
+# -----------------------------------------------------
+
+# Mengukur seberapa sering model memprediksi
+# jumlah gol secara tepat (setelah pembulatan)
 print(f"\n🎯 Exact Goal Accuracy:")
-print(f"   Home Goals Exact: {home_exact_acc*100:.2f}%")
-print(f"   Away Goals Exact: {away_exact_acc*100:.2f}%")
+print(f"   Home Goals Exact: {home_exact_acc * 100:.2f}%")
+print(f"   Away Goals Exact: {away_exact_acc * 100:.2f}%")
 
+
+# -----------------------------------------------------
+# EXACT SCORE MATCH
+# -----------------------------------------------------
+
+# Evaluasi paling ketat:
+# prediksi dianggap benar hanya jika skor home
+# DAN skor away sama persis dengan skor aktual
 print(f"\n⚽ Exact Score Match:")
-print(f"   Both scores correct: {exact_score_acc*100:.2f}%")
+print(f"   Both scores correct: {exact_score_acc * 100:.2f}%")
 
+
+# -----------------------------------------------------
+# GOAL DIFFERENCE ACCURACY
+# -----------------------------------------------------
+
+# Mengukur apakah model berhasil memprediksi
+# arah hasil pertandingan:
+# menang kandang, seri, atau menang tandang
 print(f"\n📈 Goal Difference Accuracy:")
-print(f"   Correct winner/draw: {diff_acc*100:.2f}%")
+print(f"   Correct winner/draw: {diff_acc * 100:.2f}%")
 
+
+# -----------------------------------------------------
+# WITHIN ±1 GOAL ACCURACY
+# -----------------------------------------------------
+
+# Mengukur toleransi prediksi:
+# prediksi dianggap baik jika selisih gol
+# tidak lebih dari 1 untuk kedua tim
 print(f"\n✅ Within 1 Goal Accuracy:")
-print(f"   Both within ±1 goal: {within_1_acc*100:.2f}%")
+print(f"   Both within ±1 goal: {within_1_acc * 100:.2f}%")
 
-# Distribution of prediction errors
+
+# -----------------------------------------------------
+# DISTRIBUSI ERROR PREDIKSI
+# -----------------------------------------------------
+
+# Menghitung error absolut antara prediksi (rounded)
+# dan skor aktual untuk analisis lebih mendalam
 print(f"\n📉 Error Distribution:")
+
 home_errors = np.abs(home_pred_rounded - y_home_test.values)
 away_errors = np.abs(away_pred_rounded - y_away_test.values)
-print(f"   Home - 0 error: {(home_errors == 0).sum()/len(home_errors)*100:.1f}%")
-print(f"   Home - 1 error: {(home_errors == 1).sum()/len(home_errors)*100:.1f}%")
-print(f"   Home - 2+ error: {(home_errors >= 2).sum()/len(home_errors)*100:.1f}%")
-print(f"   Away - 0 error: {(away_errors == 0).sum()/len(away_errors)*100:.1f}%")
-print(f"   Away - 1 error: {(away_errors == 1).sum()/len(away_errors)*100:.1f}%")
-print(f"   Away - 2+ error: {(away_errors >= 2).sum()/len(away_errors)*100:.1f}%")
-print("="*60)
+
+# Distribusi error untuk tim kandang
+print(f"   Home - 0 error : {(home_errors == 0).sum() / len(home_errors) * 100:.1f}%")
+print(f"   Home - 1 error : {(home_errors == 1).sum() / len(home_errors) * 100:.1f}%")
+print(f"   Home - 2+ error: {(home_errors >= 2).sum() / len(home_errors) * 100:.1f}%")
+
+# Distribusi error untuk tim tandang
+print(f"   Away - 0 error : {(away_errors == 0).sum() / len(away_errors) * 100:.1f}%")
+print(f"   Away - 1 error : {(away_errors == 1).sum() / len(away_errors) * 100:.1f}%")
+print(f"   Away - 2+ error: {(away_errors >= 2).sum() / len(away_errors) * 100:.1f}%")
+
+# Footer laporan
+print("=" * 60)
 
 # =====================================================
 # ACCURACY
@@ -694,12 +1187,56 @@ def main_cli():
             print(f"   Draw    : {result['result_proba']['D']*100:.1f}%")
             print(f"   Away Win: {result['result_proba']['A']*100:.1f}%")
         
-        # Tanya apakah ingin prediksi lagi
+        
         print("\n" + "="*60)
         lanjut = input("\nPrediksi pertandingan lain? (y/n): ").strip().lower()
         if lanjut != 'y':
             print("\nTerima kasih! Program selesai.")
             break
+        
+        # =====================================================
+# SAVE MODEL & SCALER
+# =====================================================
+
+# =====================================================
+# SAVE TRAINED MODELS & ARTIFACTS
+# =====================================================
+
+# =====================================================
+# SAVE TRAINED MODELS & ARTIFACTS (LENGKAP & AMAN)
+# =====================================================
+
+SAVE_DIR = os.path.join(BASE_DIR, "models", "saved_models")
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+# =====================
+# CLASSIFICATION MODELS
+# =====================
+joblib.dump(rf, os.path.join(SAVE_DIR, "rf_clf.pkl"))
+joblib.dump(xgb, os.path.join(SAVE_DIR, "xgb_clf.pkl"))
+joblib.dump(knn, os.path.join(SAVE_DIR, "knn_clf.pkl"))
+
+# =====================
+# SCORE REGRESSION MODELS
+# =====================
+joblib.dump(xgb_home_score, os.path.join(SAVE_DIR, "xgb_goal_home.pkl"))
+joblib.dump(xgb_away_score, os.path.join(SAVE_DIR, "xgb_goal_away.pkl"))
+
+# =====================
+# PREPROCESSING OBJECTS
+# =====================
+joblib.dump(scaler, os.path.join(SAVE_DIR, "scaler.pkl"))
+joblib.dump(le, os.path.join(SAVE_DIR, "target_le.pkl"))
+
+# =====================
+# FEATURE METADATA
+# =====================
+joblib.dump(FEATURES, os.path.join(SAVE_DIR, "feature_cols.pkl"))
+
+print("✅ Semua model & artefak berhasil disimpan ke:")
+print(SAVE_DIR)
+
+
 
 # =====================================================
 # JALANKAN CLI

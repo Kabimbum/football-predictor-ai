@@ -1,246 +1,200 @@
-import os
-from flask import Flask, render_template, request, jsonify
-import joblib
-import numpy as np
+from flask import Flask, request, jsonify, render_template_string
 import pandas as pd
+import numpy as np
 
-# ======================================================
-# PATH CONFIG
-# ======================================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from xgboost import XGBClassifier
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 
-MODEL_DIR = os.path.join(BASE_DIR, "models", "saved_models")
-DATA_PATH = os.path.join(BASE_DIR, "data", "EnglandCSVcleanded.csv")
+# ==========================
+# LOAD DATA
+# ==========================
+df = pd.read_csv("data/EnglandCSV.csv")
 
+# ==========================
+# PREPROCESS
+# ==========================
+def get_result(row):
+    if row["FTH Goals"] > row["FTA Goals"]:
+        return "Home Win"
+    elif row["FTH Goals"] < row["FTA Goals"]:
+        return "Away Win"
+    else:
+        return "Draw"
 
-# ======================================================
-# LOAD DATA & MODELS
-# ======================================================
-try:
-    df = pd.read_csv(DATA_PATH)
-except Exception as e:
-    raise Exception(f"[ERROR] Gagal load dataset: {e}")
+df["Result"] = df.apply(get_result, axis=1)
 
-try:
-    scaler = joblib.load(os.path.join(MODEL_DIR, "scaler.pkl"))
-    target_le = joblib.load(os.path.join(MODEL_DIR, "target_le.pkl"))
-    feature_cols = joblib.load(os.path.join(MODEL_DIR, "feature_cols.pkl"))
-    home_map = joblib.load(os.path.join(MODEL_DIR, "home_map.pkl"))
-    away_map = joblib.load(os.path.join(MODEL_DIR, "away_map.pkl"))
+teams = sorted(set(df["HomeTeam"]).union(df["AwayTeam"]))
 
-    rf_clf = joblib.load(os.path.join(MODEL_DIR, "rf_clf.pkl"))
-    xgb_clf = joblib.load(os.path.join(MODEL_DIR, "xgb_clf.pkl"))
-    knn_clf = joblib.load(os.path.join(MODEL_DIR, "knn_clf.pkl"))
+# ==========================
+# FEATURE ENGINEERING
+# ==========================
+def avg_goals(team, side, col):
+    return df[df[side] == team][col].mean()
 
-    rf_home = joblib.load(os.path.join(MODEL_DIR, "rf_goal_home.pkl"))
-    rf_away = joblib.load(os.path.join(MODEL_DIR, "rf_goal_away.pkl"))
-    xgb_home = joblib.load(os.path.join(MODEL_DIR, "xgb_goal_home.pkl"))
-    xgb_away = joblib.load(os.path.join(MODEL_DIR, "xgb_goal_away.pkl"))
-except Exception as e:
-    raise Exception(f"[ERROR] Gagal load model: {e}")
-
-
-# ======================================================
-# GET AVERAGE STATISTICS
-# ======================================================
-def get_team_stats(home, away):
-
-    home_df = df[df["HomeTeam"] == home]
-    away_df = df[df["AwayTeam"] == away]
-
-    stats = {
-        "H Shots": home_df["H Shots"].mean(),
-        "A Shots": away_df["A Shots"].mean(),
-        "H SOT": home_df["H SOT"].mean(),
-        "A SOT": away_df["A SOT"].mean(),
-        "H Fouls": home_df["H Fouls"].mean(),
-        "A Fouls": away_df["A Fouls"].mean(),
-        "H Corners": home_df["H Corners"].mean(),
-        "A Corners": away_df["A Corners"].mean(),
-        "H Yellow": home_df["H Yellow"].mean(),
-        "A Yellow": away_df["A Yellow"].mean(),
-        "H Red": home_df["H Red"].mean(),
-        "A Red": away_df["A Red"].mean(),
-    }
-
-    # isi median jika NaN
-    for k in stats:
-        if pd.isna(stats[k]):
-            if k in df.columns:
-                stats[k] = df[k].median()
-            else:
-                stats[k] = 0
-
-    return stats
-
-
-# ======================================================
-# BUILD FEATURE VECTOR
-# ======================================================
 def build_features(home, away):
+    return pd.DataFrame([{
+        "home_goals_avg": avg_goals(home, "HomeTeam", "FTH Goals"),
+        "away_goals_avg": avg_goals(away, "AwayTeam", "FTA Goals"),
+        "home_concede_avg": avg_goals(home, "HomeTeam", "FTA Goals"),
+        "away_concede_avg": avg_goals(away, "AwayTeam", "FTH Goals"),
+    }]).fillna(0)
 
-    if home not in home_map or away not in away_map:
-        raise ValueError(f"Team tidak ditemukan: {home} / {away}")
+X = []
+y = []
 
-    season_year = 2024
-    stats = get_team_stats(home, away)
+for _, row in df.iterrows():
+    X.append({
+        "home_goals_avg": avg_goals(row["HomeTeam"], "HomeTeam", "FTH Goals"),
+        "away_goals_avg": avg_goals(row["AwayTeam"], "AwayTeam", "FTA Goals"),
+        "home_concede_avg": avg_goals(row["HomeTeam"], "HomeTeam", "FTA Goals"),
+        "away_concede_avg": avg_goals(row["AwayTeam"], "AwayTeam", "FTH Goals"),
+    })
+    y.append(row["Result"])
 
-    numeric_order = [
-        "H Shots","A Shots","H SOT","A SOT",
-        "H Fouls","A Fouls","H Corners","A Corners",
-        "H Yellow","A Yellow","H Red","A Red"
-    ]
+X = pd.DataFrame(X).fillna(0)
 
-    row = []
+le = LabelEncoder()
+y_enc = le.fit_transform(y)
 
-    for col in feature_cols:
-        if col == "Season_year":
-            row.append(season_year)
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
 
-        elif col in numeric_order:
-            row.append(stats[col])
+# ==========================
+# MODELS
+# ==========================
+rf = RandomForestClassifier(n_estimators=200, random_state=42)
+xgb = XGBClassifier(use_label_encoder=False, eval_metric="mlogloss")
+knn = KNeighborsClassifier(n_neighbors=7)
 
-        elif col.startswith("home_prob"):
-            idx = int(col.split("_")[-1])
-            row.append(home_map[home][idx])
+rf.fit(X, y_enc)
+xgb.fit(X, y_enc)
+knn.fit(X_scaled, y_enc)
 
-        elif col.startswith("away_prob"):
-            idx = int(col.split("_")[-1])
-            row.append(away_map[away][idx])
-
-        else:
-            row.append(0)
-
-    return pd.DataFrame([row], columns=feature_cols)
-
-
-# ======================================================
-# FLASK APP
-# ======================================================
+# ==========================
+# FLASK
+# ==========================
 app = Flask(__name__)
 
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Football Predictor AI</title>
+    <style>
+        body { font-family: Arial; background:#111; color:#fff; padding:40px }
+        select, button { padding:10px; margin:5px }
+        .box { background:#222; padding:20px; margin-top:20px }
+    </style>
+</head>
+<body>
 
+<h2>Football Match Predictor</h2>
+
+<select id="home">
+    <option value="">Home Team</option>
+    {% for t in teams %}
+    <option value="{{t}}">{{t}}</option>
+    {% endfor %}
+</select>
+
+<select id="away">
+    <option value="">Away Team</option>
+    {% for t in teams %}
+    <option value="{{t}}">{{t}}</option>
+    {% endfor %}
+</select>
+
+<button onclick="predict()">Predict</button>
+
+<div class="box" id="result"></div>
+
+<script>
+function predict(){
+    fetch("/predict", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body:JSON.stringify({
+            home_team:document.getElementById("home").value,
+            away_team:document.getElementById("away").value
+        })
+    })
+    .then(res=>res.json())
+    .then(d=>{
+        if(d.error){
+            document.getElementById("result").innerHTML = d.error;
+            return;
+        }
+        document.getElementById("result").innerHTML = `
+        <b>${d.home} vs ${d.away}</b><br><br>
+
+        RF: ${d.RF_Result} (${d.RF_Confidence})<br>
+        XGB: ${d.XGB_Result} (${d.XGB_Confidence})<br>
+        KNN: ${d.KNN_Result} (${d.KNN_Confidence})<br><br>
+
+        <b>Ensemble:</b> ${d.Ensemble_Result}<br>
+        Confidence: ${d.Ensemble_Confidence}
+        `;
+    })
+}
+</script>
+
+</body>
+</html>
+"""
 
 @app.route("/")
 def index():
-    teams = sorted(list(home_map.keys()))
-    return render_template("index.html", teams=teams)
+    return render_template_string(HTML, teams=teams)
 
-
-# ======================================================
-# PREDICT ROUTE
-# ======================================================
 @app.route("/predict", methods=["POST"])
 def predict():
+    data = request.get_json()
+    home = data.get("home_team")
+    away = data.get("away_team")
 
-    try:
-        home = request.form.get("home_team")
-        away = request.form.get("away_team")
+    if not home or not away:
+        return jsonify({"error":"Pilih home dan away team"})
 
-        if home == away:
-            return jsonify({"error": "Home dan Away tidak boleh sama."})
+    if home == away:
+        return jsonify({"error":"Home dan Away tidak boleh sama"})
 
-        # Build features
-        X = build_features(home, away)
-        X_scaled = scaler.transform(X)
+    X_test = build_features(home, away)
+    X_test_scaled = scaler.transform(X_test)
 
-        # =========== CLASSIFICATION ===========
-        rf_pred = target_le.inverse_transform(rf_clf.predict(X))[0]
-        xgb_pred = target_le.inverse_transform(xgb_clf.predict(X))[0]
-        knn_pred = target_le.inverse_transform(knn_clf.predict(X_scaled))[0]
+    rf_p = rf.predict(X_test)[0]
+    xgb_p = xgb.predict(X_test)[0]
+    knn_p = knn.predict(X_test_scaled)[0]
 
-        # =========== REGRESSION (GOALS) ===========
-        home_rf = max(0, int(round(rf_home.predict(X)[0])))
-        away_rf = max(0, int(round(rf_away.predict(X)[0])))
+    rf_conf = float(np.max(rf.predict_proba(X_test)))
+    xgb_conf = float(np.max(xgb.predict_proba(X_test)))
+    knn_conf = float(np.max(knn.predict_proba(X_test_scaled)))
 
-        home_xgb = max(0, int(round(xgb_home.predict(X)[0])))
-        away_xgb = max(0, int(round(xgb_away.predict(X)[0])))
+    votes = [
+        le.inverse_transform([rf_p])[0],
+        le.inverse_transform([xgb_p])[0],
+        le.inverse_transform([knn_p])[0]
+    ]
 
-        # Ensemble score
-        ensemble_home = max(0, int(round((home_rf + home_xgb) / 2)))
-        ensemble_away = max(0, int(round((away_rf + away_xgb) / 2)))
+    ensemble = max(set(votes), key=votes.count)
 
-        # ======================================================
-        # FINAL WINNER (berdasarkan skor ensemble)
-        # ======================================================
-        if ensemble_home > ensemble_away:
-            final_winner = "H"
-        elif ensemble_home < ensemble_away:
-            final_winner = "A"
-        else:
-            final_winner = "D"
+    return jsonify({
+        "home": home,
+        "away": away,
 
-        # -------------------------
-        # Confidence (probability)
-        # -------------------------
-        try:
-            rf_conf = float(np.max(rf_clf.predict_proba(X)))
-        except Exception:
-            rf_conf = None
+        "RF_Result": votes[0],
+        "RF_Confidence": round(rf_conf,3),
 
-        try:
-            xgb_conf = float(np.max(xgb_clf.predict_proba(X)))
-        except Exception:
-            xgb_conf = None
+        "XGB_Result": votes[1],
+        "XGB_Confidence": round(xgb_conf,3),
 
-        try:
-            knn_conf = float(np.max(knn_clf.predict_proba(X_scaled)))
-        except Exception:
-            knn_conf = None
+        "KNN_Result": votes[2],
+        "KNN_Confidence": round(knn_conf,3),
 
-        # -------------------------
-        # F1 proxy (safe single-sample proxy)
-        # -------------------------
-        try:
-            rf_f1_proxy = float(rf_clf.score(X, target_le.transform([rf_pred])))
-        except Exception:
-            rf_f1_proxy = None
-
-        try:
-            xgb_f1_proxy = float(xgb_clf.score(X, target_le.transform([xgb_pred])))
-        except Exception:
-            xgb_f1_proxy = None
-
-        try:
-            knn_f1_proxy = float(knn_clf.score(X_scaled, target_le.transform([knn_pred])))
-        except Exception:
-            knn_f1_proxy = None
-
-        # safe rounding helper
-        def _r(v, nd=3):
-            return round(v, nd) if (v is not None) else None
-
-        return jsonify({
-            "RandomForest": rf_pred,
-            "XGBoost": xgb_pred,
-            "KNN": knn_pred,
-
-            "RF_score": f"{home_rf} - {away_rf}",
-            "XGB_score": f"{home_xgb} - {away_xgb}",
-            "Ensemble_score": f"{ensemble_home} - {ensemble_away}",
-
-            "RF_conf": _r(rf_conf),
-            "XGB_conf": _r(xgb_conf),
-            "KNN_conf": _r(knn_conf),
-
-            "RF_f1": _r(rf_f1_proxy),
-            "XGB_f1": _r(xgb_f1_proxy),
-            "KNN_f1": _r(knn_f1_proxy),
-
-            # tambahan agar skor jelas
-            "home_team": home,
-            "away_team": away,
-            "home_goals": ensemble_home,
-            "away_goals": ensemble_away,
-
-            "Final_Winner": final_winner
-        })
-
-    except Exception as e:
-        return jsonify({"error": str(e)})
-
-
+        "Ensemble_Result": ensemble,
+        "Ensemble_Confidence": round((rf_conf+xgb_conf+knn_conf)/3,3)
+    })
 
 if __name__ == "__main__":
-
     app.run(debug=True)
